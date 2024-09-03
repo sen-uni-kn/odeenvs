@@ -1,4 +1,5 @@
-# Safe Reinforcement Learning Environments
+# ODE Reinforcement Learning Environments
+
 Included environments:
  - ACC (Adaptive Cruise Control)
 
