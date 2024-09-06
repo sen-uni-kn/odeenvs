@@ -31,5 +31,5 @@ develop = [
 all = ["odeenvs[test,develop]"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["test"]
 
