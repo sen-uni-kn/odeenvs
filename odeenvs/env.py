@@ -1,18 +1,24 @@
+#  Copyright (c) 2024 David Boetius.
+#  Licensed under the MIT license
 from abc import ABC, abstractmethod
-from typing import Any, Literal, override
+from typing import Any, Final, Literal, override
 
+import matplotlib.pyplot as plt
 import numpy as np
+from numpy.typing import NDArray
 import gymnasium as gym
 from gymnasium.core import RenderFrame
 import pygame
 
+from .utils import map_space
 
-class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
+
+class ODEEnv[S, O, A, IO](gym.Env[O, A], ABC):
     """The ODE Environment base class.
 
     Solves a ODE of the form
     ```
-    x_dot(t) = f(x(t), u(t), t)
+    x'(t) = f(x(t), u(t), t)
     ```
     where `x(t)` is the *state*, `u(t)` is the *action* from the agent, the
     input to the ODE and `t` is the *time*.
@@ -23,8 +29,9 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
     To implement, you need to provide
      - an `action_space` attribute (`gymnasium.Env`)
      - an `observation_space` attribute (`gymnasium.Env`)
+     - a `state_space` attribute.
      - an `_initial_state` method to provides `x(0)`.
-     - an `_derivative` method that computes `x_dot(t)`.
+     - an `_derivative` method that computes `x'(t)`.
      - an `_reward` method that computes the reward for a state, action pair.
 
     Additionally, you can implement
@@ -32,13 +39,23 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
      - `_obs()` to construct observations from the state.
      - `_info()` to provide additional information that is returned by `step`.
      - `_draw()` for rendering the current state.
+
+    Generics:
+     - `S`: The state space type.
+     - `O`: The observation space type.
+     - `A`: The action space type.
+     - `IO`: The initial state options type.
     """
 
-    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 24}
+    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
 
     def __init__(
         self,
-        time_horizon: float,
+        state_space: gym.Space[S],
+        observation_space: gym.Space[O],
+        action_space: gym.Space[A],
+        initial_state_options_space: gym.Space[IO],
+        time_steps: int,
         step_size: float,
         batch_size: int = 1,
         engine: Literal["RK4", "Euler"] = "RK4",
@@ -48,30 +65,43 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
         Initialize an `ODEEnv`.
 
         Args:
-            time_horizon: For how many time steps to run the simulation.
-            step_size: The step size to use for simulation.
+            state_space: The space of states.
+            observation_space: The space of observations.
+            action_space: The space of actions.
+            time_steps: How many simulation steps to perform.
+            step_size: The time step size to use for simulation.
             render_mode: See `gymnasium.Env`.
             batch_size: How many simulations to perform in one batch.
                 If `None`, a single simulation is performed.
             engine: The integration method to use for solving the ODE.
                 Options: `RK4` (the Runge-Kutta 4 method), `Euler` (the Euler method).
         """
-        self.time_horizon = time_horizon
-        self.step_size = step_size
-        self.batch_size = batch_size
-        self.engine = engine
+        self.state_space: Final = state_space
+        self.observation_space: Final = observation_space
+        self.action_space: Final = action_space
+        self.initial_state_options_space: Final = initial_state_options_space
 
-        self.__state = None
-        self.__t = None
+        self.time_steps: Final = time_steps
+        self.step_size: Final = step_size
+        self.batch_size: Final = batch_size
+        self.engine: Final = engine
+
+        self.__state: S | None = None
+        self.__action: A | None = None
+        self.__t: float | None = None
+        self.__time_step: int | None = None
 
         assert render_mode is None or render_mode in self.metadata["render_modes"]
-        self.window_size = 512
+        self.window_size = (512, 512)
         self.render_mode = render_mode
         self.window = None
         self.clock = None
+        self.figure = None
+        self._plot_data = None
+        self.__plt_was_interactive = True
 
     @abstractmethod
-    def _initial_state(self, options) -> np.ndarray:
+    def _initial_state(self, options: IO) -> S:
         """The initial state of the ODE.
 
         When this method is called, `self.np_random` is seeded, so that you can use
@@ -86,8 +116,8 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def _derivative(self, state, action, t: float) -> np.ndarray:
-        """The derivative `x_dot(t) = f(x(t), u(t), t)` of the ODE.
+    def _derivative(self, state: S, action: A, t: float) -> S:
+        """The derivative `x'(t) = f(x(t), u(t), t)` of the ODE.
 
         Args:
             state: The states `x(t)`. Is batched.
@@ -95,17 +125,17 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
             t: The time `t`.
 
         Returns:
-            The (batched) derivative `x_dot(t)` of the ODE.
+            The (batched) derivative `x'(t)` of the ODE.
         """
         raise NotImplementedError()
 
     @abstractmethod
-    def _reward(self, state: np.ndarray, action: np.ndarray, t: float) -> np.ndarray:
+    def _reward(self, state: S, action: A, t: float) -> NDArray[np.float32]:
         """Returns the reward for a state and action.
 
         Args:
             state: The states `x(t)`. Is batched.
-            action: The actions `u(t)`. Is batched. None at initialization.
+            action: The actions `u(t)`. Is batched.
             t: The time `t`.
 
         Returns:
@@ -113,7 +143,7 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
         """
         raise NotImplementedError()
 
-    def _cost(self, state: np.ndarray, t: float) -> np.ndarray:
+    def _cost(self, state: S, action: A, t: float) -> NDArray[np.float32]:
         """Returns a cost for satisfying/violating the safety specification.
 
         If the cost is positive, the specification is violated.
@@ -123,6 +153,7 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
 
         Args:
             state: The state `x(t)´. Is batched.
+            action: The actions `u(t)`. Is batched.
             t: The time `t`.
 
         Returns:
@@ -130,9 +161,7 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
         """
         return -np.ones((state.shape[0],), state.dtype)
 
-    def _obs(
-        self, state: np.ndarray, action: np.ndarray | None, t: float
-    ) -> np.ndarray:
+    def _obs(self, state: S, action: A | None, t: float) -> O:
         """Construct observations from state `x(t)`, action `u(t)` and time step `t`.
 
         Returns the state by default.
@@ -147,9 +176,7 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
         """
         return state
 
-    def _info(
-        self, state: np.ndarray, action: np.ndarray | None, t: float
-    ) -> dict[str, Any]:
+    def _info(self, state: S, action: A | None, t: float) -> dict[str, Any]:
         """Get additional information to be returned by `step`.
 
         Returns an empty dictionary by default.
@@ -166,21 +193,28 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
         """The current time of the simulation."""
         return self.__t
 
+    @property
+    def time_step(self):
+        """The current time step of the simulation."""
+        return self.__time_step
+
     @override
     def reset(
         self,
         *,
         seed: int | None = None,
-        options: dict[str, Any] | None = None,
+        options: IO | None = None,
     ) -> tuple[np.ndarray, dict[str, Any]]:
         super().reset(seed=seed)
 
-        x0 = self._initial_state(options)
-        obs = self._obs(x0, None, 0.0)
-        info = self._info(x0, None, 0.0)
-
         self.__t = 0.0
+        self.__time_step = 0
+
+        x0 = self._initial_state(options)
+        obs = self._obs(x0, None, self.__t)
+        info = self._info(x0, None, self.__t)
         self.__state = x0
+        self.__action = None
 
         if self.render_mode == "human":
             self._render_frame()
@@ -188,8 +222,8 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
         return obs, info
 
     def step(
-        self, action: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, bool, bool, dict[str, Any]]:
+        self, action: A
+    ) -> tuple[O, NDArray[np.float32], NDArray[np.float32], bool, bool, dict[str, Any]]:
         """Run one simulation step.
 
         Args:
@@ -204,21 +238,23 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
         """
         next_state = self._engine(self.__state, action, self.__t)
         self.__t += self.step_size
+        self.__time_step += 1
         self.__state = next_state
+        self.__action = action
 
         reward = self._reward(next_state, action, self.__t)
-        cost = self._cost(next_state, self.__t)
+        cost = self._cost(next_state, action, self.__t)
         obs = self._obs(next_state, action, self.__t)
         info = self._info(next_state, action, self.__t)
 
-        terminated = self.__t >= self.time_horizon
+        terminated = self.__time_step >= self.time_steps
 
         if self.render_mode == "human":
             self._render_frame()
 
         return obs, reward, cost, terminated, False, info
 
-    def _engine(self, state: np.ndarray, action: np.ndarray, t: float) -> np.ndarray:
+    def _engine(self, state: S, action: A, t: float) -> S:
         """Runs one simulation step using the simulation engine."""
         match self.engine:
             case "Euler":
@@ -228,18 +264,29 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
             case _:
                 raise NotImplementedError()
 
-    def _euler(self, state: np.ndarray, action: np.ndarray, t: float) -> np.ndarray:
+    def _euler(self, state: S, action: A, t: float) -> S:
         h = self.step_size
         k1 = self._derivative(state, action, t + h)
-        return state + h * k1
+        return map_space(lambda s, k1: s + h * k1, self.state_space, state, k1)
 
-    def _rk4(self, state: np.ndarray, action: np.ndarray, t: float) -> np.ndarray:
+    def _rk4(self, state: S, action: A, t: float) -> S:
+        def map_(f, *args):
+            return map_space(f, self.state_space, *args)
+
         h = self.step_size
         k1 = self._derivative(state, action, t)
-        k2 = self._derivative(state + h * k1 / 2, action, t + h / 2)
-        k3 = self._derivative(state + h * k2 / 2, action, t + h / 2)
-        k4 = self._derivative(state + h * k3, action, t + h)
-        return state + h / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+        k2 = self._derivative(
+            map_(lambda s, k1: s + h * k1 / 2, state, k1), action, t + h / 2
+        )
+        k3 = self._derivative(
+            map_(lambda s, k2: s + h * k2 / 2, state, k2), action, t + h / 2
+        )
+        k4 = self._derivative(map_(lambda s, k3: s + h * k3, state, k3), action, t + h)
+
+        def update(s, k1, k2, k3, k4):
+            return s + h / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+
+        return map_(update, state, k1, k2, k3, k4)
 
     # ==================================================================================
     # MARK: rendering
@@ -253,16 +300,24 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
         if self.window is None and self.render_mode == "human":
             pygame.init()
             pygame.display.init()
-            self.window = pygame.display.set_mode((self.window_size, self.window_size))
+            self.window = pygame.display.set_mode(self.window_size)
+
         if self.clock is None and self.render_mode == "human":
             self.clock = pygame.time.Clock()
 
-        canvas = pygame.Surface((self.window_size, self.window_size))
+        if self.figure is None and self.render_mode == "human":
+            self.__plt_was_interactive = plt.isinteractive()
+            plt.ion()
+            self.figure, self._plot_data = self._prepare_figure()
+
+        canvas = pygame.Surface(self.window_size)
         canvas.fill((255, 255, 255))
-        self._draw(self.__state, canvas)
+        self._draw(self.__state, self.__action, canvas)
 
         match self.render_mode:
             case "human":
+                self._plot(self.__state, self.__action, self.figure, self._plot_data)
+
                 self.window.blit(canvas, canvas.get_rect())
                 pygame.event.pump()
                 pygame.display.update()
@@ -274,14 +329,26 @@ class ODEEnv(gym.Env[np.ndarray, np.ndarray], ABC):
                 )
 
     @abstractmethod
-    def _draw(self, state: np.ndarray, canvas: pygame.Surface):
+    def _draw(self, state: S, action: A | None, canvas: pygame.Surface):
         """Draw the current state."""
         raise NotImplementedError()
+
+    def _prepare_figure(self) -> tuple[plt.Figure | None, Any | None]:
+        """Create Matplotlib plots for plotting."""
+        return None, None
+
+    def _plot(self, state: S, action: A | None, fig: plt.Figure, plot_data: Any):
+        """Update the state plot."""
+        pass
 
     def close(self):
         if self.window is not None:
             pygame.display.quit()
             pygame.quit()
+        if self.figure is not None:
+            plt.close(self.figure)
+            if not self.__plt_was_interactive:
+                plt.ioff()
 
     def __enter__(self):
         pass
