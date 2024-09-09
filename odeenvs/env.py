@@ -57,6 +57,7 @@ class ODEEnv[S, O, A, IO](gym.Env[O, A], ABC):
         initial_state_options_space: gym.Space[IO],
         time_steps: int,
         step_size: float,
+        n_costs: int = 1,
         batch_size: int = 1,
         engine: Literal["RK4", "Euler"] = "RK4",
         render_mode=None,
@@ -73,6 +74,7 @@ class ODEEnv[S, O, A, IO](gym.Env[O, A], ABC):
             render_mode: See `gymnasium.Env`.
             batch_size: How many simulations to perform in one batch.
                 If `None`, a single simulation is performed.
+            n_costs: The number of cost terms (safety constraints).
             engine: The integration method to use for solving the ODE.
                 Options: `RK4` (the Runge-Kutta 4 method), `Euler` (the Euler method).
         """
@@ -83,6 +85,7 @@ class ODEEnv[S, O, A, IO](gym.Env[O, A], ABC):
 
         self.time_steps: Final = time_steps
         self.step_size: Final = step_size
+        self.n_costs: Final = n_costs
         self.batch_size: Final = batch_size
         self.engine: Final = engine
 
@@ -143,7 +146,8 @@ class ODEEnv[S, O, A, IO](gym.Env[O, A], ABC):
         """
         raise NotImplementedError()
 
-    def _cost(self, state: S, action: A, t: float) -> NDArray[np.float32]:
+    @abstractmethod
+    def _costs(self, state: S, action: A, t: float) -> tuple[NDArray[np.float32], ...]:
         """Returns a cost for satisfying/violating the safety specification.
 
         If the cost is positive, the specification is violated.
@@ -157,9 +161,9 @@ class ODEEnv[S, O, A, IO](gym.Env[O, A], ABC):
             t: The time `t`.
 
         Returns:
-            The (batched) safety cost.
+            The (batched) safety costs.
         """
-        return -np.ones((state.shape[0],), state.dtype)
+        raise NotImplementedError()
 
     def _obs(self, state: S, action: A | None, t: float) -> O:
         """Construct observations from state `x(t)`, action `u(t)` and time step `t`.
@@ -223,17 +227,17 @@ class ODEEnv[S, O, A, IO](gym.Env[O, A], ABC):
 
     def step(
         self, action: A
-    ) -> tuple[O, NDArray[np.float32], NDArray[np.float32], bool, bool, dict[str, Any]]:
+    ) -> tuple[O, NDArray[np.float32], ..., bool, bool, dict[str, Any]]:
         """Run one simulation step.
 
         Args:
             action: The action `u(t)`. Batched.
 
         Returns:
-            The observations, the reward, the cost (safety), whether the simulation
-            was terminated, whether it was truncated, and a dictionary containing
-            auxiliary information.
-            Observations, reward, and cost are batched. The auxiliary information
+            The observations, the reward, one or several (safety) costs,
+            whether the simulation, was terminated, whether it was truncated,
+            and a dictionary containing auxiliary information.
+            Observations, reward, and costs are batched. The auxiliary information
             may also be batched.
         """
         next_state = self._engine(self.__state, action, self.__t)
@@ -243,7 +247,7 @@ class ODEEnv[S, O, A, IO](gym.Env[O, A], ABC):
         self.__action = action
 
         reward = self._reward(next_state, action, self.__t)
-        cost = self._cost(next_state, action, self.__t)
+        costs = self._costs(next_state, action, self.__t)
         obs = self._obs(next_state, action, self.__t)
         info = self._info(next_state, action, self.__t)
 
@@ -252,7 +256,7 @@ class ODEEnv[S, O, A, IO](gym.Env[O, A], ABC):
         if self.render_mode == "human":
             self._render_frame()
 
-        return obs, reward, cost, terminated, False, info
+        return obs, reward, *costs, terminated, False, info
 
     def _engine(self, state: S, action: A, t: float) -> S:
         """Runs one simulation step using the simulation engine."""

@@ -147,9 +147,10 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             init_options_space,
             time_steps,
             step_size,
-            batch_size,
-            engine,
-            render_mode,
+            n_costs=2,
+            batch_size=batch_size,
+            engine=engine,
+            render_mode=render_mode,
         )
         self.safe_distance_absolute: Final = safe_distance_absolute
         self.safe_distance_relative: Final = safe_distance_relative
@@ -234,13 +235,13 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         return -self._d_rel(state)
 
     @override
-    def _cost(self, state: _S, action: _A, t: float) -> np.ndarray:
+    def _costs(self, state: _S, action: _A, t: float) -> tuple[np.ndarray, np.ndarray]:
         v_ego = state["v_ego"]
         d_rel = self._d_rel(state)
         safe_d = self._safe_distance(state)
         d_cost = safe_d - d_rel
         v_cost = v_ego - self._max_velocity
-        return np.maximum(d_cost, v_cost)
+        return d_cost, v_cost
 
     @override
     def _obs(
@@ -333,7 +334,8 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         draw_car(ego_x, ego_color)
 
         # distance indicator
-        cost = float(self._cost(state, action, self.t)[0])
+        d_cost, v_cost = self._costs(state, action, self.t)
+        cost = max(float(d_cost[0]), float(v_cost[0]))
         line_color = bad if cost >= 0 else good
         line_y = car_y + car_h / 2
         line_sep = 10
@@ -378,7 +380,8 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         colors = {
             "in_ego": "tab:orange",
             "reward": "tab:green",
-            "cost": "tab:red",
+            "d_cost": "tab:red",
+            "v_cost": "tab:blue",
             "a_ego": "tab:orange",
             "v_ego": "tab:orange",
             "x_ego": "tab:orange",
@@ -389,7 +392,15 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         lines = {
             var: ax.plot([], [], color=colors[var], linestyle="solid")[0]
             for var, ax in axes.items()
+            if not var.endswith("cost")
         }
+        cost_ax = axes["cost"]
+        lines["d_cost"] = cost_ax.plot(
+            [], [], color=colors["d_cost"], linestyle="solid"
+        )[0]
+        lines["v_cost"] = cost_ax.plot(
+            [], [], color=colors["v_cost"], linestyle="solid"
+        )[0]
 
         for var, ax in axes.items():
             ax.set_xlim(0.0, self.time_steps * self.step_size)
@@ -433,12 +444,13 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             update_view("in_ego", action["in_ego"])
 
         reward = self._reward(state, action, self.t)
-        update_view("reward", reward)
-        cost = self._cost(state, action, self.t)
-        update_view("cost", cost)
+        update_view("reward", reward[0])
+        d_cost, v_cost = self._costs(state, action, self.t)
+        update_view("d_cost", d_cost[0])
+        update_view("v_cost", v_cost[0])
 
         for var, val in state.items():
-            update_view(var, val)
+            update_view(var, val[0])
 
         fig.canvas.draw()
         fig.canvas.flush_events()
