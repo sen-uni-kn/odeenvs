@@ -120,9 +120,10 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             f"Got {time_steps=} and {in_lead_switches=}."
         )
 
-        def batched_box(low, high):
-            low = np.repeat(low, batch_size, axis=0).reshape((batch_size, -1))
-            high = np.repeat(high, batch_size, axis=0).reshape((batch_size, -1))
+        def batched_box(low, high, flat=False):
+            shape = (batch_size, -1) if not flat else (batch_size,)
+            low = np.repeat(low, batch_size, axis=0).reshape(shape)
+            high = np.repeat(high, batch_size, axis=0).reshape(shape)
             return spaces.Box(low, high, dtype=np.float32)
 
         state_space = batched_box(
@@ -135,7 +136,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             low=[-np.inf, 0, -np.inf],
             high=[np.inf] * 3,
         )
-        act_space = batched_box(low=[a_ego_min], high=[a_ego_max])
+        act_space = batched_box(low=a_ego_min, high=a_ego_max, flat=True)
         init_options_space = spaces.Box(
             low=a_lead_min,
             high=a_lead_max,
