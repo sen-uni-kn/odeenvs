@@ -18,12 +18,12 @@ def test_simulate(render_mode):
 
     for i in range(200):
         action = 2
-        observation, reward, cost, terminated, truncated, _ = env.step(
-            {"in_ego": np.array([action], dtype=np.float32)}
+        observation, reward, d_cost, v_cost, terminated, truncated, _ = env.step(
+            np.array([action], dtype=np.float32)
         )
 
         if render_mode is None:
-            print(f"{i=}, {action=}, {observation=}, {reward=}, {cost=}")
+            print(f"{i=}, {action=}, {observation=}, {reward=}, {d_cost=}, {v_cost=}")
 
         if terminated or truncated:
             observation, _ = env.reset()

@@ -3,6 +3,7 @@
 from typing import Final, override, Literal, Any
 
 import gymnasium as gym
+from gymnasium import spaces
 import matplotlib.colors
 from matplotlib import pyplot as plt
 import numpy as np
@@ -15,13 +16,14 @@ from .env import ODEEnv
 __all__ = ("ACCEnv",)
 
 
-_S = dict[
-    Literal["x_lead", "v_lead", "a_lead", "x_ego", "v_ego", "a_ego"],
-    NDArray[np.float32],
-]
-_O = dict[Literal["v_ego", "d_rel", "v_rel"], NDArray[np.float32]]
-_A = dict[Literal["in_ego"], NDArray[np.float32]]
-_IO = dict[Literal["in_lead"], NDArray[np.float32]]
+# _S = dict[
+#     Literal["x_lead", "v_lead", "a_lead", "x_ego", "v_ego", "a_ego"],
+#     NDArray[np.float32],
+# ]
+# _O = dict[Literal["v_ego", "d_rel", "v_rel"], NDArray[np.float32]]
+# _A = dict[Literal["in_ego"], NDArray[np.float32]]
+# _IO = dict[Literal["in_lead"], NDArray[np.float32]]
+_S = _O = _A = _IO = NDArray[np.float32]
 
 
 class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
@@ -30,27 +32,29 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
     The actor accelerates a car (the *ego* car) to follow the *lead* car.
     The goal is to follow the lead car while maintaining a safe distance.
 
-    State variables:
-     - `x_lead`: The position of the lead car.
-     - `v_lead`: The velocity of the lead car.
-     - `a_lead`: The acceleration of the lead car.
-     - `x_ego`: The position of the ego car.
-     - `v_ego`: The velocity of the ego car.
-     - `a_ego`: The acceleration of the ego car.
+    This environment is vectorized: Every run performs a batch of simulations.
 
-    Observations:
-     - `v_ego`: The velocity of the ego car.
-     - `d_rel = x_lead - x_ego`: The relative distance between the lead car and the ego car.
-     - `v_rel = v_lead - v_ego`: The relative velocity of the ego car relative to the lead car.
+    State variables (index):
+     - `x_lead` (0): The position of the lead car.
+     - `v_lead` (1): The velocity of the lead car.
+     - `a_lead` (2): The acceleration of the lead car.
+     - `x_ego` (3): The position of the ego car.
+     - `v_ego` (4): The velocity of the ego car.
+     - `a_ego` (5): The acceleration of the ego car.
+
+    Observations (index):
+     - `v_ego` (0): The velocity of the ego car.
+     - `d_rel = x_lead - x_ego` (1): The relative distance between the lead car and the ego car.
+     - `v_rel = v_lead - v_ego` (2): The relative velocity of the ego car relative to the lead car.
 
     Actions:
      - `in_ego`: Ego car acceleration input.
 
-     Initial state options:
-      - `in_lead`: The throttle input of the lead car. Accepts an array of size
-        `in_lead_switches` (initializer argument).
+    Initial state options:
+     - `in_lead`: The throttle input of the lead car. Accepts an array of size
+       `in_lead_switches` (initializer argument).
 
-     Dynamics:
+    Dynamics:
 
         a_lead' = 2 * (in_lead - a_lead)
         v_lead' = a_lead
@@ -78,6 +82,19 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         Resulting cost: max(D + t_gap * v_ego - d_rel, v_ego - (v_set + 0.1))
     """
 
+    state_var = {
+        "x_lead": 0,
+        "v_lead": 1,
+        "a_lead": 2,
+        "x_ego": 3,
+        "v_ego": 4,
+        "a_ego": 5,
+    }
+    """Maps state variables to indices in the state array."""
+
+    observation_var = {"v_ego": 0, "d_rel": 1, "v_rel": 2}
+    """Maps observation variables to indices in the observation array."""
+
     def __init__(
         self,
         time_steps: int = 500,
@@ -104,40 +121,29 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         )
 
         def batched_box(low, high):
-            return gym.spaces.Box(low, high, shape=(batch_size,), dtype=np.float32)
+            low = np.repeat(low, batch_size, axis=0).reshape((batch_size, -1))
+            high = np.repeat(high, batch_size, axis=0).reshape((batch_size, -1))
+            return spaces.Box(low, high, dtype=np.float32)
 
-        state_space = gym.spaces.Dict(
-            {
-                "x_lead": batched_box(low=0, high=np.inf),
-                "v_lead": batched_box(low=-np.inf, high=np.inf),
-                "a_lead": batched_box(low=a_lead_min, high=a_lead_max),
-                "x_ego": batched_box(low=0, high=np.inf),
-                "v_ego": batched_box(low=-np.inf, high=np.inf),
-                "a_ego": batched_box(low=a_lead_min, high=a_lead_max),
-            }
+        state_space = batched_box(
+            # x_lead, v_lead, a_lead, x_ego, v_ego, a_ego
+            low=[0, -np.inf, a_lead_min, 0, -np.inf, a_ego_min],
+            high=[np.inf, np.inf, a_lead_max, np.inf, np.inf, a_ego_max],
         )
-        obs_space = gym.spaces.Dict(
-            {
-                "v_ego": batched_box(low=-np.inf, high=np.inf),
-                "d_rel": batched_box(low=0, high=np.inf),
-                "v_rel": batched_box(low=-np.inf, high=np.inf),
-            }
+        obs_space = batched_box(
+            # v_ego, d_rel, v_rel
+            low=[-np.inf, 0, -np.inf],
+            high=[np.inf] * 3,
         )
-        act_space = gym.spaces.Dict(
-            {"in_ego": batched_box(low=a_ego_min, high=a_ego_max)}
-        )
-        init_options_space = gym.spaces.Dict(
-            {
-                "in_lead": gym.spaces.Box(
-                    low=a_lead_min,
-                    high=a_lead_max,
-                    shape=(
-                        batch_size,
-                        in_lead_switches,
-                    ),
-                    dtype=np.float32,
-                ),
-            }
+        act_space = batched_box(low=[a_ego_min], high=[a_ego_max])
+        init_options_space = spaces.Box(
+            low=a_lead_min,
+            high=a_lead_max,
+            shape=(
+                batch_size,
+                in_lead_switches,
+            ),
+            dtype=np.float32,
         )
 
         super().__init__(
@@ -161,17 +167,22 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         self.v0_ego: Final = v0_ego
         self.in_lead_switches: Final = in_lead_switches
 
-        self.__initial_state = {
-            "x_lead": self.x0_lead,
-            "v_lead": self.v0_lead,
-            "a_lead": 0.0,
-            "x_ego": self.x0_ego,
-            "v_ego": self.v0_ego,
-            "a_ego": 0.0,
-        }
+        init_state = [self.x0_lead, self.v0_lead, 0.0, self.x0_ego, self.v0_ego, 0.0]
+        self.__initial_state = np.array([init_state] * batch_size, dtype=np.float32)
         self.__in_lead = None
 
         self.window_size = (750, 320)
+
+    def step(self, action: _A) -> tuple[
+        _O,
+        NDArray[np.float32],
+        NDArray[np.float32],
+        NDArray[np.float32],
+        bool,
+        bool,
+        dict[str, Any],
+    ]:
+        return super().step(action)  # type: ignore
 
     @override
     def _initial_state(self, options: _IO | None) -> _S:
@@ -180,16 +191,13 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         else:
             sub_seed = int(self.np_random.integers(2**32 - 1))
             self.initial_state_options_space.seed(sub_seed)
-            in_lead = self.initial_state_options_space.sample()["in_lead"]
+            in_lead = self.initial_state_options_space.sample()
 
         # stretch in_lead to the number of time steps
         repetitions = self.time_steps // self.in_lead_switches
         self.__in_lead = np.repeat(in_lead, repetitions, axis=-1)
 
-        return {
-            key: np.full((self.batch_size,), val, dtype=np.float32)
-            for key, val in self.__initial_state.items()
-        }
+        return self.__initial_state.copy()
 
     @staticmethod
     def _car_model(x, v, a, in_):
@@ -200,30 +208,24 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
 
     @override
     def _derivative(self, state: _S, action: _A, t: float) -> _S:
-        x_lead, v_lead, a_lead = state["x_lead"], state["v_lead"], state["a_lead"]
-        x_ego, v_ego, a_ego = state["x_ego"], state["v_ego"], state["a_ego"]
-        in_ego = action["in_ego"]
+        x_lead, v_lead, a_lead, x_ego, v_ego, a_ego = state.T
+        in_ego = action
 
         in_lead = self.__in_lead[:, self.time_step]
 
         d_x_lead, d_v_lead, d_a_lead = self._car_model(x_lead, v_lead, a_lead, in_lead)
         d_x_ego, d_v_ego, d_a_ego = self._car_model(x_ego, v_ego, a_ego, in_ego)
-        return {
-            "x_lead": d_x_lead,
-            "v_lead": d_v_lead,
-            "a_lead": d_a_lead,
-            "x_ego": d_x_ego,
-            "v_ego": d_v_ego,
-            "a_ego": d_a_ego,
-        }
+        return np.stack(
+            [d_x_lead, d_v_lead, d_a_lead, d_x_ego, d_v_ego, d_a_ego], axis=-1
+        )
 
-    @staticmethod
-    def _d_rel(state: _S) -> np.ndarray:
-        x_lead, x_ego = state["x_lead"], state["x_ego"]
+    @classmethod
+    def _d_rel(cls, state: _S) -> NDArray[np.float32]:
+        x_lead, x_ego = cls.get_state(state, "x_lead", "x_ego")
         return x_lead - x_ego
 
-    def _safe_distance(self, state: _S) -> np.ndarray:
-        v_ego = state["v_ego"]
+    def _safe_distance(self, state: _S) -> NDArray[np.float32]:
+        v_ego = state[:, self.state_var["v_ego"]]
         return self.safe_distance_absolute + self.safe_distance_relative * v_ego
 
     @property
@@ -231,12 +233,14 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         return self.set_velocity + 0.1
 
     @override
-    def _reward(self, state: _S, action: _A, t: float) -> np.ndarray:
+    def _reward(self, state: _S, action: _A, t: float) -> NDArray[np.float32]:
         return -self._d_rel(state)
 
     @override
-    def _costs(self, state: _S, action: _A, t: float) -> tuple[np.ndarray, np.ndarray]:
-        v_ego = state["v_ego"]
+    def _costs(
+        self, state: _S, action: _A, t: float
+    ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
+        v_ego = state[:, self.state_var["v_ego"]]
         d_rel = self._d_rel(state)
         safe_d = self._safe_distance(state)
         d_cost = safe_d - d_rel
@@ -249,11 +253,19 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         state: _S,
         action: _A | None,
         t: float,
-    ) -> dict[str, np.ndarray]:
-        v_lead, v_ego = state["v_lead"], state["v_ego"]
+    ) -> _O:
+        v_lead, v_ego = self.get_state(state, "v_lead", "v_ego")
         v_rel = v_lead - v_ego
         d_rel = self._d_rel(state)
-        return {"v_ego": v_ego, "d_rel": d_rel, "v_rel": v_rel}
+        return np.stack([v_ego, d_rel, v_rel], axis=-1)
+
+    @classmethod
+    def get_state(cls, state, *state_vars) -> tuple[NDArray[np.float32], ...]:
+        return tuple(state[:, cls.state_var[var]] for var in state_vars)
+
+    @classmethod
+    def get_obs(cls, obs, *obs_vars) -> tuple[NDArray[np.float32], ...]:
+        return tuple(obs[:, cls.observation_var[var]] for var in obs_vars)
 
     @override
     def _draw(self, state: _S, action: _A, canvas: pygame.Surface):
@@ -298,7 +310,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         strip_w = 50
         strip_distance = 1.5 * strip_w
 
-        x_time = (0.05 * float(state["x_lead"])) % 1
+        x_time = (0.05 * float(state[0, self.state_var["x_lead"]])) % 1
         strip_x = -x_time * (strip_w + strip_distance) - 10
         while strip_x < w:
             pygame.draw.rect(canvas, white, (strip_x, strip_y, strip_w, strip_h))
@@ -376,6 +388,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             ],
             figsize=(10, 6),
         )
+        axes["d_cost"] = axes["v_cost"] = axes["cost"]
 
         colors = {
             "in_ego": "tab:orange",
@@ -394,11 +407,10 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             for var, ax in axes.items()
             if not var.endswith("cost")
         }
-        cost_ax = axes["cost"]
-        lines["d_cost"] = cost_ax.plot(
+        lines["d_cost"] = axes["d_cost"].plot(
             [], [], color=colors["d_cost"], linestyle="solid"
         )[0]
-        lines["v_cost"] = cost_ax.plot(
+        lines["v_cost"] = axes["v_cost"].plot(
             [], [], color=colors["v_cost"], linestyle="solid"
         )[0]
 
@@ -408,6 +420,8 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             ax.set_xlabel("t")
             ax.set_ylabel(var)
 
+        axes["cost"].set_title("cost")
+        axes["cost"].set_ylabel("cost")
         fig.tight_layout(pad=0.1)
         return fig, (axes, lines)
 
@@ -434,14 +448,14 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             elif len(x) - 1 > len(old_y):
                 x_ = x_[-len(old_y) - 1 :]
 
-            y = np.concat((old_y, [value[0]]))
+            y = np.concat((old_y, [value]))
             lines[var].set_data(x_, y)
 
             ax.relim()
             ax.autoscale_view()
 
         if action is not None:
-            update_view("in_ego", action["in_ego"])
+            update_view("in_ego", action[0])
 
         reward = self._reward(state, action, self.t)
         update_view("reward", reward[0])
@@ -449,8 +463,8 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         update_view("d_cost", d_cost[0])
         update_view("v_cost", v_cost[0])
 
-        for var, val in state.items():
-            update_view(var, val[0])
+        for var, idx in self.state_var.items():
+            update_view(var, state[0, idx])
 
         fig.canvas.draw()
         fig.canvas.flush_events()
