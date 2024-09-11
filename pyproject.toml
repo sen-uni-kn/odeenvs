@@ -7,12 +7,12 @@ name = "odeenvs"
 authors = [{name = "David Boetius", email = "david.boetius@uni-konstanz.de"}]
 readme = "README.md"
 dynamic = ["version", "description"]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-    "numpy >= 2.1.1, < 3.0",
+    "numpy >= 2.1.1, <3.0",
     "gymnasium == 0.29.1",
-    "pygame >= 2.0, < 3.0",
-    "matplotlib >= 3.9.2, < 4.0",
+    "pygame >= 2.6.0, <3.0",
+    "matplotlib >= 3.9.2, <4.0",
 ]
 license = {file = "LICENSE"}
 classifiers = [

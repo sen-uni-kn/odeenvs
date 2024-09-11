@@ -1,6 +1,6 @@
 #  Copyright (c) 2024 David Boetius.
 #  Licensed under the MIT license
-from typing import Final, Literal, Any
+from typing import Final, override, Literal, Any
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -185,6 +185,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
     ]:
         return super().step(action)  # type: ignore
 
+    @override
     def _initial_state(self, options: _IO | None) -> _S:
         if options is not None:
             in_lead = options["in_lead"]
@@ -206,6 +207,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         d_x = v
         return d_x, d_v, d_a
 
+    @override
     def _derivative(self, state: _S, action: _A, t: float) -> _S:
         x_lead, v_lead, a_lead, x_ego, v_ego, a_ego = state.T
         in_ego = action
@@ -231,9 +233,11 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
     def _max_velocity(self) -> float:
         return self.set_velocity + 0.1
 
+    @override
     def _reward(self, state: _S, action: _A, t: float) -> NDArray[np.float32]:
         return -self._d_rel(state)
 
+    @override
     def _costs(
         self, state: _S, action: _A, t: float
     ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
@@ -244,6 +248,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         v_cost = v_ego - self._max_velocity
         return d_cost, v_cost
 
+    @override
     def _obs(
         self,
         state: _S,
@@ -263,6 +268,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
     def get_obs(cls, obs, *obs_vars) -> tuple[NDArray[np.float32], ...]:
         return tuple(obs[:, cls.observation_var[var]] for var in obs_vars)
 
+    @override
     def _draw(self, state: _S, action: _A, canvas: pygame.Surface):
         # visual reference: https://commons.wikimedia.org/wiki/File:Schema_ICC.svg
         w, h = self.window_size
@@ -371,6 +377,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             width=4,
         )
 
+    @override
     def _prepare_figure(
         self,
     ) -> tuple[plt.Figure, tuple[dict[str, plt.Axes], dict[str, plt.Line2D]]]:
@@ -419,6 +426,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         fig.tight_layout(pad=0.1)
         return fig, (axes, lines)
 
+    @override
     def _plot(
         self,
         state: _S,
