@@ -187,8 +187,8 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
 
     @override
     def _initial_state(self, options: _IO | None) -> _S:
-        if options is not None:
-            in_lead = options["in_lead"]
+        if options:
+            in_lead = options
         else:
             sub_seed = int(self.np_random.integers(2**32 - 1))
             self.initial_state_options_space.seed(sub_seed)
@@ -449,7 +449,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             elif len(x) - 1 > len(old_y):
                 x_ = x_[-len(old_y) - 1 :]
 
-            y = np.concat((old_y, [value]))
+            y = np.concatenate((old_y, [value]))
             lines[var].set_data(x_, y)
 
             ax.relim()
