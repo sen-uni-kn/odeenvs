@@ -1,7 +1,7 @@
 #  Copyright (c) 2024 David Boetius.
 #  Licensed under the MIT license
 from abc import ABC, abstractmethod
-from typing import Any, Final, Literal, override
+from typing import Any, Final, Literal, TypeVar, Generic
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,8 +12,13 @@ import pygame
 
 from .utils import map_space
 
+S = TypeVar("S")
+O = TypeVar("O")
+A = TypeVar("A")
+IO = TypeVar("IO")
 
-class ODEEnv[S, O, A, IO](gym.Env[O, A], ABC):
+
+class ODEEnv(gym.Env[O, A], ABC, Generic[S, O, A, IO]):
     """The ODE Environment base class.
 
     Solves a ODE of the form
@@ -202,7 +207,6 @@ class ODEEnv[S, O, A, IO](gym.Env[O, A], ABC):
         """The current time step of the simulation."""
         return self.__time_step
 
-    @override
     def reset(
         self,
         *,
