@@ -210,7 +210,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
     @override
     def _derivative(self, state: _S, action: _A, t: float) -> _S:
         x_lead, v_lead, a_lead, x_ego, v_ego, a_ego = state.T
-        in_ego = action
+        in_ego = action.reshape(self.action_space.shape)
 
         in_lead = self.__in_lead[:, self.time_step]
 

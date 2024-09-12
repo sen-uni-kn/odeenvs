@@ -11,6 +11,6 @@ from .acc import ACCEnv
 import gymnasium as gym
 
 gym.register(
-    "ACC-v0",
+    "odeenvs:ACC-v0",
     entry_point="odeenvs:ACCEnv",
 )
