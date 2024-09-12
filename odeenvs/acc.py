@@ -201,7 +201,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         return self.__initial_state.copy()
 
     @staticmethod
-    def _car_model(x, v, a, in_):
+    def _car_model(v, a, in_):
         d_a = 2 * (in_ - a)
         d_v = a
         d_x = v
@@ -214,8 +214,8 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
 
         in_lead = self.__in_lead[:, self.time_step]
 
-        d_x_lead, d_v_lead, d_a_lead = self._car_model(x_lead, v_lead, a_lead, in_lead)
-        d_x_ego, d_v_ego, d_a_ego = self._car_model(x_ego, v_ego, a_ego, in_ego)
+        d_x_lead, d_v_lead, d_a_lead = self._car_model(v_lead, a_lead, in_lead)
+        d_x_ego, d_v_ego, d_a_ego = self._car_model(v_ego, a_ego, in_ego)
         return np.stack(
             [d_x_lead, d_v_lead, d_a_lead, d_x_ego, d_v_ego, d_a_ego], axis=-1
         )

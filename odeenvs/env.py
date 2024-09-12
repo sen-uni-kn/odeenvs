@@ -27,9 +27,8 @@ class ODEEnv[S, O, A, IO](gym.Env[O, A], ABC):
     as an additional value after the reward.
 
     To implement, you need to provide
-     - an `action_space` attribute (`gymnasium.Env`)
-     - an `observation_space` attribute (`gymnasium.Env`)
-     - a `state_space` attribute.
+     - action space, observation space, state space,
+       and initial state options space for `ODEEnvs` initializer (all batched).
      - an `_initial_state` method to provides `x(0)`.
      - an `_derivative` method that computes `x'(t)`.
      - an `_reward` method that computes the reward for a state, action pair.
