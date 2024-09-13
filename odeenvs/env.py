@@ -28,7 +28,8 @@ class ODEEnv[S, O, A, IO](gym.Env[O, A], ABC):
 
     To implement, you need to provide
      - action space, observation space, state space,
-       and initial state options space for `ODEEnvs` initializer (all batched).
+       and initial state options space for `ODEEnvs` initializer.
+       These spaces should not contain batch dimensions.
      - an `_initial_state` method to provides `x(0)`.
      - an `_derivative` method that computes `x'(t)`.
      - an `_reward` method that computes the reward for a state, action pair.

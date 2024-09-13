@@ -120,31 +120,33 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             f"Got {time_steps=} and {in_lead_switches=}."
         )
 
-        def batched_box(low, high, flat=False):
-            shape = (batch_size, -1) if not flat else (batch_size,)
-            low = np.repeat(low, batch_size, axis=0).reshape(shape)
-            high = np.repeat(high, batch_size, axis=0).reshape(shape)
-            return spaces.Box(low, high, dtype=np.float32)
+        def box(low, high, shape=None):
+            low_high = (np.array(val) for val in (low, high))
+            if shape is not None:
+                low_high = (np.resize(a, shape) for a in low_high)
+            return spaces.Box(*low_high, dtype=np.float32)
 
-        state_space = batched_box(
+        state_space = box(
             # x_lead, v_lead, a_lead, x_ego, v_ego, a_ego
             low=[0, -np.inf, a_lead_min, 0, -np.inf, a_ego_min],
             high=[np.inf, np.inf, a_lead_max, np.inf, np.inf, a_ego_max],
         )
-        obs_space = batched_box(
+        obs_space = box(
             # v_ego, d_rel, v_rel
             low=[-np.inf, 0, -np.inf],
             high=[np.inf] * 3,
         )
-        act_space = batched_box(low=a_ego_min, high=a_ego_max, flat=True)
-        init_options_space = spaces.Box(
+        act_space = box(low=a_ego_min, high=a_ego_max)
+        init_options_space = box(
+            low=a_lead_min, high=a_lead_max, shape=(in_lead_switches,)
+        )
+        self.__batched_init_options_space = box(
             low=a_lead_min,
             high=a_lead_max,
             shape=(
                 batch_size,
                 in_lead_switches,
             ),
-            dtype=np.float32,
         )
 
         super().__init__(
@@ -192,7 +194,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         else:
             sub_seed = int(self.np_random.integers(2**32 - 1))
             self.initial_state_options_space.seed(sub_seed)
-            in_lead = self.initial_state_options_space.sample()
+            in_lead = self.__batched_init_options_space.sample()
 
         # stretch in_lead to the number of time steps
         repetitions = self.time_steps // self.in_lead_switches
@@ -210,7 +212,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
     @override
     def _derivative(self, state: _S, action: _A, t: float) -> _S:
         x_lead, v_lead, a_lead, x_ego, v_ego, a_ego = state.T
-        in_ego = action.reshape(self.action_space.shape)
+        in_ego = action.reshape((-1, *self.action_space.shape))
 
         in_lead = self.__in_lead[:, self.time_step]
 
@@ -220,13 +222,12 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             [d_x_lead, d_v_lead, d_a_lead, d_x_ego, d_v_ego, d_a_ego], axis=-1
         )
 
-    @classmethod
-    def _d_rel(cls, state: _S) -> NDArray[np.float32]:
-        x_lead, x_ego = cls.get_state(state, "x_lead", "x_ego")
+    def _d_rel(self, state: _S) -> NDArray[np.float32]:
+        x_lead, x_ego = self.get_state(state, "x_lead", "x_ego")
         return x_lead - x_ego
 
     def _safe_distance(self, state: _S) -> NDArray[np.float32]:
-        v_ego = state[:, self.state_var["v_ego"]]
+        (v_ego,) = self.get_state(state, "v_ego")
         return self.safe_distance_absolute + self.safe_distance_relative * v_ego
 
     @property
@@ -241,7 +242,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
     def _costs(
         self, state: _S, action: _A, t: float
     ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
-        v_ego = state[:, self.state_var["v_ego"]]
+        (v_ego,) = self.get_state(state, "v_ego")
         d_rel = self._d_rel(state)
         safe_d = self._safe_distance(state)
         d_cost = safe_d - d_rel
@@ -260,16 +261,17 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         d_rel = self._d_rel(state)
         return np.stack([v_ego, d_rel, v_rel], axis=-1)
 
-    @classmethod
-    def get_state(cls, state, *state_vars) -> tuple[NDArray[np.float32], ...]:
-        return tuple(state[:, cls.state_var[var]] for var in state_vars)
+    def get_state(self, state, *state_vars) -> tuple[NDArray[np.float32], ...]:
+        return tuple(state[:, self.state_var[var]] for var in state_vars)
 
-    @classmethod
-    def get_obs(cls, obs, *obs_vars) -> tuple[NDArray[np.float32], ...]:
-        return tuple(obs[:, cls.observation_var[var]] for var in obs_vars)
+    def get_obs(self, obs, *obs_vars) -> tuple[NDArray[np.float32], ...]:
+        obs = obs.reshape((-1, *self.observation_space.shape))
+        return tuple(obs[:, self.observation_var[var]] for var in obs_vars)
 
     @override
-    def _draw(self, state: _S, action: _A, canvas: pygame.Surface):
+    def _draw(self, state: _S, action: _A | None, canvas: pygame.Surface):
+        if action is not None:
+            action = action.reshape((-1, *self.action_space.shape))
         # visual reference: https://commons.wikimedia.org/wiki/File:Schema_ICC.svg
         w, h = self.window_size
 
