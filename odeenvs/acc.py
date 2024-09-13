@@ -236,7 +236,8 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
 
     @override
     def _reward(self, state: _S, action: _A, t: float) -> NDArray[np.float32]:
-        return -self._d_rel(state)
+        # zero-center the reward
+        return -(self._d_rel(state) - self.safe_distance_absolute)
 
     @override
     def _costs(
