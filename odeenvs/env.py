@@ -47,7 +47,7 @@ class ODEEnv[S, O, A, IO](gym.Env[O, A], ABC):
      - `IO`: The initial state options type.
     """
 
-    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
+    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 100}
 
     def __init__(
         self,

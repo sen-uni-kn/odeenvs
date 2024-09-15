@@ -74,12 +74,15 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
      - `set_velocity` (`v_set`): The set velocity of the ego car.
         The ego car may not exceed `v_set + 0.1` in velocity.
 
-    Reward:
-        `-d_rel`
-
     Safety constraint:
         `Always (d_rel >= D + t_gap * v_ego AND v_ego <= v_set + 0.1)`
-        Resulting cost: max(D + t_gap * v_ego - d_rel, v_ego - (v_set + 0.1))
+        Costs:
+          - `d_cost = (D + t_gap * v_ego - d_rel)`
+          - `v_cost = (v_ego - (v_set + 0.1))`
+
+    Reward:
+        min(-(d_rel - D), 0)
+
     """
 
     state_var = {
@@ -140,14 +143,6 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         init_options_space = box(
             low=a_lead_min, high=a_lead_max, shape=(in_lead_switches,)
         )
-        self.__batched_init_options_space = box(
-            low=a_lead_min,
-            high=a_lead_max,
-            shape=(
-                batch_size,
-                in_lead_switches,
-            ),
-        )
 
         super().__init__(
             state_space,
@@ -169,6 +164,8 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         self.x0_ego: Final = x0_ego
         self.v0_ego: Final = v0_ego
         self.in_lead_switches: Final = in_lead_switches
+        self.in_lead_min: Final = a_lead_min
+        self.in_lead_max: Final = a_lead_max
 
         init_state = [self.x0_lead, self.v0_lead, 0.0, self.x0_ego, self.v0_ego, 0.0]
         self.__initial_state = np.array([init_state] * batch_size, dtype=np.float32)
@@ -192,9 +189,15 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         if options:
             in_lead = options
         else:
-            sub_seed = int(self.np_random.integers(2**32 - 1))
-            self.initial_state_options_space.seed(sub_seed)
-            in_lead = self.__batched_init_options_space.sample()
+            # sample breaking/accelerating with equal probability
+            init_shape = (self.batch_size, self.in_lead_switches)
+            breaking = self.np_random.integers(
+                low=0, high=1, endpoint=True, size=init_shape
+            )
+            value = self.np_random.random(size=init_shape)
+            in_lead = np.where(
+                breaking == 0, self.in_lead_min * value, self.in_lead_max * value
+            )
 
         # stretch in_lead to the number of time steps
         repetitions = self.time_steps // self.in_lead_switches
@@ -236,8 +239,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
 
     @override
     def _reward(self, state: _S, action: _A, t: float) -> NDArray[np.float32]:
-        # zero-center the reward
-        return -(self._d_rel(state) - self.safe_distance_absolute)
+        return -np.maximum(self._d_rel(state) - self._safe_distance(state), 0.0)
 
     @override
     def _costs(
@@ -246,6 +248,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         (v_ego,) = self.get_state(state, "v_ego")
         d_rel = self._d_rel(state)
         safe_d = self._safe_distance(state)
+
         d_cost = safe_d - d_rel
         v_cost = v_ego - self._max_velocity
         return d_cost, v_cost
