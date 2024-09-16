@@ -34,6 +34,23 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
 
     This environment is vectorized: Every run performs a batch of simulations.
 
+    Parameters:
+     - `x0_lead`, `v0_lead`, ...: Fixed initial positions and velocities or a range of
+        initial positions and velocities as a (min, max) tuple.
+     - `a_lead_range`: Range of the throttle input of the lead car as a (min, max) tuple.
+     - `a_ego_range`: Range of the throttle input of the ego car as a (min, max) tuple.
+     - `mu`: A friction parameter.
+     - `in_lead_switches`: How often the throttle input of the lead car switches
+        in one simulation.
+     - `safe_distance_absolute` (`D`): a fixed distance that the ego car needs to
+        maintain to the lead car.
+     - `safe_distance_relative` (`t_gap`): the distance relative to the ego car
+        velocity that the ego car needs to maintain to the lead car.
+        The overall distance that the ego car needs to maintain is
+        `safe_distance_absolute + safe_distance_relative * v_ego`.
+     - `set_velocity` (`v_set`): The set velocity of the ego car.
+        The ego car may not exceed `v_set + 0.1` in velocity.
+
     State variables (index):
      - `x_lead` (0): The position of the lead car.
      - `v_lead` (1): The velocity of the lead car.
@@ -51,28 +68,22 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
      - `in_ego`: Ego car acceleration input.
 
     Initial state options:
-     - `in_lead`: The throttle input of the lead car. Accepts an array of size
-       `in_lead_switches` (initializer argument).
+     - An array of shape `(batch_size, 4 + in_lead_switches)`.
+        The first for entries of the second dimension specify the initial
+        positions and velocities `x0_lead, v0_lead, x0_ego, v0_ego` in this order.
+        The initial acceleration is always zero.
+        The remaining dimensions specify the throttle input of the lead car at the time
+        points where this input switches.
 
     Dynamics:
 
-        a_lead' = 2 * (in_lead - a_lead)
+        a_lead' = 2 * (in_lead - a_lead) - mu * v_lead^2
         v_lead' = a_lead
         x_lead' = v_lead
 
-        a_ego' = 2 * (in_ego - a_ego)
+        a_ego' = 2 * (in_ego - a_ego) - mu * v_ego^2
         v_ego' = a_ego
         x_ego' = v_ego
-
-    Parameters:
-     - `safe_distance_absolute` (`D`): a fixed distance that the ego car needs to
-        maintain to the lead car.
-     - `safe_distance_relative` (`t_gap`): the distance relative to the ego car
-        velocity that the ego car needs to maintain to the lead car.
-        The overall distance that the ego car needs to maintain is
-        `safe_distance_absolute + safe_distance_relative * v_ego`.
-     - `set_velocity` (`v_set`): The set velocity of the ego car.
-        The ego car may not exceed `v_set + 0.1` in velocity.
 
     Safety constraint:
         `Always (d_rel >= D + t_gap * v_ego AND v_ego <= v_set + 0.1)`
@@ -100,20 +111,19 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
 
     def __init__(
         self,
-        time_steps: int = 500,
+        time_steps: int = 1024,
         step_size: float = 0.1,
         safe_distance_absolute: float = 10.0,
         safe_distance_relative: float = 1.4,
         set_velocity: float = 30.0,
-        x0_lead: float = 70.0,
-        v0_lead: float = 28.0,
-        x0_ego: float = 10.0,
-        v0_ego: float = 22.0,
-        a_lead_min: float = -1.0,
-        a_lead_max: float = 1.0,
-        a_ego_min: float = -3.0,
-        a_ego_max: float = 2.0,
-        in_lead_switches: int = 5,
+        x0_lead: float | tuple[float, float] = (60.0, 100.0),
+        v0_lead: float | tuple[float, float] = (10.0, 40.0),
+        x0_ego: float | tuple[float, float] = (0.0, 0.0),
+        v0_ego: float | tuple[float, float] = (10.0, 30.0),
+        a_lead_range: tuple[float, float] = (-5.0, 5.0),
+        a_ego_range: tuple[float, float] = (-3.0, 2.0),
+        mu: float = 0.0001,
+        in_lead_switches: int = 4,
         batch_size: int = 1,
         engine: Literal["RK4", "Euler"] = "RK4",
         render_mode=None,
@@ -123,12 +133,20 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             f"Got {time_steps=} and {in_lead_switches=}."
         )
 
+        def pair(val):
+            return val if isinstance(val, tuple) else (val, val)
+
+        x0_lead, v0_lead = pair(x0_lead), pair(v0_lead)
+        x0_ego, v0_ego = pair(x0_ego), pair(v0_ego)
+
         def box(low, high, shape=None):
             low_high = (np.array(val) for val in (low, high))
             if shape is not None:
                 low_high = (np.resize(a, shape) for a in low_high)
             return spaces.Box(*low_high, dtype=np.float32)
 
+        a_lead_min, a_lead_max = a_lead_range
+        a_ego_min, a_ego_max = a_ego_range
         state_space = box(
             # x_lead, v_lead, a_lead, x_ego, v_ego, a_ego
             low=[0, -np.inf, a_lead_min, 0, -np.inf, a_ego_min],
@@ -141,7 +159,11 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         )
         act_space = box(low=a_ego_min, high=a_ego_max)
         init_options_space = box(
-            low=a_lead_min, high=a_lead_max, shape=(in_lead_switches,)
+            low=[x0_lead[0], v0_lead[0], x0_ego[0], v0_ego[0]]
+            + [a_lead_min] * in_lead_switches,
+            high=[x0_lead[1], v0_lead[1], x0_ego[1], v0_ego[1]]
+            + [a_lead_max] * in_lead_switches,
+            shape=(batch_size, 4 + in_lead_switches),
         )
 
         super().__init__(
@@ -156,19 +178,20 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             engine=engine,
             render_mode=render_mode,
         )
-        self.safe_distance_absolute: Final = safe_distance_absolute
-        self.safe_distance_relative: Final = safe_distance_relative
-        self.set_velocity: Final = set_velocity
-        self.x0_lead: Final = x0_lead
-        self.v0_lead: Final = v0_lead
-        self.x0_ego: Final = x0_ego
-        self.v0_ego: Final = v0_ego
-        self.in_lead_switches: Final = in_lead_switches
-        self.in_lead_min: Final = a_lead_min
-        self.in_lead_max: Final = a_lead_max
+        self.safe_distance_absolute: Final[float] = safe_distance_absolute
+        self.safe_distance_relative: Final[float] = safe_distance_relative
+        self.set_velocity: Final[float] = set_velocity
+        self.x0_lead: Final[tuple[float, float]] = x0_lead
+        self.v0_lead: Final[tuple[float, float]] = v0_lead
+        self.x0_ego: Final[tuple[float, float]] = x0_ego
+        self.v0_ego: Final[tuple[float, float]] = v0_ego
+        self.a_lead_range: Final[tuple[float, float]] = a_lead_range
+        self.a_ego_range: Final[tuple[float, float]] = a_ego_range
+        self.in_lead_switches: Final[int] = in_lead_switches
+        self.in_lead_min: Final[float] = a_lead_min
+        self.in_lead_max: Final[float] = a_lead_max
+        self.mu: Final[float] = mu
 
-        init_state = [self.x0_lead, self.v0_lead, 0.0, self.x0_ego, self.v0_ego, 0.0]
-        self.__initial_state = np.array([init_state] * batch_size, dtype=np.float32)
         self.__in_lead = None
 
         self.window_size = (750, 320)
@@ -187,27 +210,26 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
     @override
     def _initial_state(self, options: _IO | None) -> _S:
         if options:
-            in_lead = options
+            init = options.reshape((-1, 4 + self.in_lead_switches))
         else:
-            # sample breaking/accelerating with equal probability
-            init_shape = (self.batch_size, self.in_lead_switches)
-            breaking = self.np_random.integers(
-                low=0, high=1, endpoint=True, size=init_shape
-            )
-            value = self.np_random.random(size=init_shape)
-            in_lead = np.where(
-                breaking == 0, self.in_lead_min * value, self.in_lead_max * value
-            )
+            init = self.initial_state_options_space.sample()
+        init_lead = init[:, :2]
+        init_ego = init[:, 2:4]
+        in_lead = init[:, 4:]
 
         # stretch in_lead to the number of time steps
         repetitions = self.time_steps // self.in_lead_switches
         self.__in_lead = np.repeat(in_lead, repetitions, axis=-1)
 
-        return self.__initial_state.copy()
+        initial_state = np.empty((self.batch_size, 6), dtype=np.float32)
+        initial_state[:, :2] = init_lead
+        initial_state[:, 2] = 0.0  # lead acceleration
+        initial_state[:, 3:5] = init_ego
+        initial_state[:, 5] = 0.0  # ego acceleration
+        return initial_state
 
-    @staticmethod
-    def _car_model(v, a, in_):
-        d_a = 2 * (in_ - a)
+    def _car_model(self, v, a, in_):
+        d_a = 2 * (in_ - a) - self.mu * np.square(v)
         d_v = a
         d_x = v
         return d_x, d_v, d_a
@@ -317,7 +339,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         strip_w = 50
         strip_distance = 1.5 * strip_w
 
-        x_time = (0.05 * float(state[0, self.state_var["x_lead"]])) % 1
+        x_time = (0.02 * float(state[0, self.state_var["x_lead"]])) % 1
         strip_x = -x_time * (strip_w + strip_distance) - 10
         while strip_x < w:
             pygame.draw.rect(canvas, white, (strip_x, strip_y, strip_w, strip_h))
@@ -333,9 +355,9 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         roof_h = 42
         roof_space_x = 13
         roof_space_y = 4
-        car_y = strip_y + 0.375 * lane_h
+        car_y = strip_y + 0.2 * lane_h
         lead_x = 0.8 * w
-        unit_car_distance = 1.1 * car_w / self.safe_distance_absolute
+        unit_car_distance = 0.75 * car_w / self.safe_distance_absolute
 
         def draw_car(x, color):
             pygame.draw.rect(canvas, color, (x, car_y, car_w, car_h))
