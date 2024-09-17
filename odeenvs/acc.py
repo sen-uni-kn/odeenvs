@@ -111,7 +111,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
 
     def __init__(
         self,
-        time_steps: int = 1024,
+        time_steps: int = 1000,
         step_size: float = 0.1,
         safe_distance_absolute: float = 10.0,
         safe_distance_relative: float = 1.4,
@@ -120,19 +120,14 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         v0_lead: float | tuple[float, float] = (10.0, 40.0),
         x0_ego: float | tuple[float, float] = (0.0, 0.0),
         v0_ego: float | tuple[float, float] = (10.0, 30.0),
-        a_lead_range: tuple[float, float] = (-5.0, 5.0),
+        a_lead_range: tuple[float, float] = (-5.0, 3.0),
         a_ego_range: tuple[float, float] = (-3.0, 2.0),
         mu: float = 0.0001,
-        in_lead_switches: int = 4,
+        switch_frequency: int = 250,
         batch_size: int = 1,
         engine: Literal["RK4", "Euler"] = "RK4",
         render_mode=None,
     ):
-        assert time_steps % in_lead_switches == 0, (
-            f"The number of time steps must be a multiple of in_lead_switches. "
-            f"Got {time_steps=} and {in_lead_switches=}."
-        )
-
         def pair(val):
             return val if isinstance(val, tuple) else (val, val)
 
@@ -158,6 +153,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             high=[np.inf] * 3,
         )
         act_space = box(low=a_ego_min, high=a_ego_max)
+        in_lead_switches = time_steps // switch_frequency
         init_options_space = box(
             low=[x0_lead[0], v0_lead[0], x0_ego[0], v0_ego[0]]
             + [a_lead_min] * in_lead_switches,
@@ -187,6 +183,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         self.v0_ego: Final[tuple[float, float]] = v0_ego
         self.a_lead_range: Final[tuple[float, float]] = a_lead_range
         self.a_ego_range: Final[tuple[float, float]] = a_ego_range
+        self.switch_frequency: Final[int] = switch_frequency
         self.in_lead_switches: Final[int] = in_lead_switches
         self.in_lead_min: Final[float] = a_lead_min
         self.in_lead_max: Final[float] = a_lead_max
@@ -212,14 +209,21 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         if options:
             init = options.reshape((-1, 4 + self.in_lead_switches))
         else:
+            sub_seed = int(self.np_random.integers(0, 2 * 32 - 1))
+            self.initial_state_options_space.seed(sub_seed)
             init = self.initial_state_options_space.sample()
         init_lead = init[:, :2]
         init_ego = init[:, 2:4]
         in_lead = init[:, 4:]
 
         # stretch in_lead to the number of time steps
-        repetitions = self.time_steps // self.in_lead_switches
-        self.__in_lead = np.repeat(in_lead, repetitions, axis=-1)
+        self.__in_lead = np.empty((self.batch_size, self.time_steps))
+        size_repeated = self.switch_frequency * self.in_lead_switches
+        self.__in_lead[:, :size_repeated] = np.repeat(
+            in_lead, self.switch_frequency, axis=-1
+        )
+        if size_repeated < self.time_steps:
+            self.__in_lead[:, size_repeated:] = in_lead[:, (-1,)]
 
         initial_state = np.empty((self.batch_size, 6), dtype=np.float32)
         initial_state[:, :2] = init_lead
