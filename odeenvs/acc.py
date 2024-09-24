@@ -29,8 +29,10 @@ _S = _O = _A = _IO = NDArray[np.float32]
 class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
     """Adaptive Cruise Control (ACC) Environment.
 
-    The actor accelerates a car (the *ego* car) to follow the *lead* car.
-    The goal is to follow the lead car while maintaining a safe distance.
+    The actor accelerates a car (the *ego* car) to follow the *lead* car
+    or maintain a certain set velocity.
+    The goal is to follow the lead car while maintaining a safe distance
+    or maintaining the set velocity if the lead car is far ahead.
 
     This environment is vectorized: Every run performs a batch of simulations.
 
@@ -49,7 +51,8 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         The overall distance that the ego car needs to maintain is
         `safe_distance_absolute + safe_distance_relative * v_ego`.
      - `set_velocity` (`v_set`): The set velocity of the ego car.
-        The ego car may not exceed `v_set + 0.1` in velocity.
+     - `speed_limit` (`v_limit`): The maximum velocity the car may
+        The ego car may not this velocity.
 
     State variables (index):
      - `x_lead` (0): The position of the lead car.
@@ -86,13 +89,18 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         x_ego' = v_ego
 
     Safety constraint:
-        `Always (d_rel >= D + t_gap * v_ego AND v_ego <= v_set + 0.1)`
+        `Always (d_rel >= D + t_gap * v_ego AND v_ego <= v_limit)`
         Costs:
           - `d_cost = (D + t_gap * v_ego - d_rel)`
-          - `v_cost = (v_ego - (v_set + 0.1))`
+          - `v_cost = (v_ego - v_limit)`
 
     Reward:
-        min(-(d_rel - D), 0)
+        `-|v_ego - v_set| - 0.1 * |a_ego|/a_scale - 0.1 * |a_ego - in_ego|/a_scale`
+        where `a_scale = max(a_max, -a_min)`
+
+        The second term incentives efficiency (accelerate less).
+        The last term relates the current acceleration to the current acceleration
+        input for incentivizing driving comfort.
 
     """
 
@@ -116,6 +124,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         safe_distance_absolute: float = 10.0,
         safe_distance_relative: float = 1.4,
         set_velocity: float = 30.0,
+        speed_limit: float = 33.0,
         x0_lead: float | tuple[float, float] = (60.0, 100.0),
         v0_lead: float | tuple[float, float] = (10.0, 40.0),
         x0_ego: float | tuple[float, float] = (0.0, 0.0),
@@ -177,6 +186,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         self.safe_distance_absolute: Final[float] = safe_distance_absolute
         self.safe_distance_relative: Final[float] = safe_distance_relative
         self.set_velocity: Final[float] = set_velocity
+        self.speed_limit: Final[float] = speed_limit
         self.x0_lead: Final[tuple[float, float]] = x0_lead
         self.v0_lead: Final[tuple[float, float]] = v0_lead
         self.x0_ego: Final[tuple[float, float]] = x0_ego
@@ -259,13 +269,22 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         (v_ego,) = self.get_state(state, "v_ego")
         return self.safe_distance_absolute + self.safe_distance_relative * v_ego
 
-    @property
-    def _max_velocity(self) -> float:
-        return self.set_velocity + 0.1
-
     @override
     def _reward(self, state: _S, action: _A, t: float) -> NDArray[np.float32]:
-        return -np.maximum(self._d_rel(state) - self._safe_distance(state), 0.0)
+        # return -np.maximum(self._d_rel(state) - self._safe_distance(state), 0.0)
+        v_ego, a_ego = self.get_state(state, "v_ego", "a_ego")
+        in_ego = action.reshape((-1, *self.action_space.shape))
+
+        r_v = -np.abs(v_ego - self.set_velocity)
+
+        # normalize accelerations
+        a_min, a_max = self.a_ego_range
+        a_scale = max(a_max, -a_min)
+        a_ego = a_ego / a_scale
+        in_ego = in_ego / a_scale
+        r_a = -np.abs(a_ego) - np.abs(a_ego - in_ego)
+
+        return r_v + 0.1 * r_a
 
     @override
     def _costs(
@@ -276,7 +295,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         safe_d = self._safe_distance(state)
 
         d_cost = safe_d - d_rel
-        v_cost = v_ego - self._max_velocity
+        v_cost = v_ego - self.speed_limit
         return d_cost, v_cost
 
     @override
@@ -490,11 +509,11 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         if action is not None:
             update_view("in_ego", action[0])
 
-        reward = self._reward(state, action, self.t)
-        update_view("reward", reward[0])
-        d_cost, v_cost = self._costs(state, action, self.t)
-        update_view("d_cost", d_cost[0])
-        update_view("v_cost", v_cost[0])
+            reward = self._reward(state, action, self.t)
+            update_view("reward", reward[0])
+            d_cost, v_cost = self._costs(state, action, self.t)
+            update_view("d_cost", d_cost[0])
+            update_view("v_cost", v_cost[0])
 
         for var, idx in self.state_var.items():
             update_view(var, state[0, idx])
