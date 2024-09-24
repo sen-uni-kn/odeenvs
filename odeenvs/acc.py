@@ -91,11 +91,11 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
     Safety constraint:
         `Always (d_rel >= D + t_gap * v_ego AND v_ego <= v_limit)`
         Costs:
-          - `d_cost = (D + t_gap * v_ego - d_rel)`
-          - `v_cost = (v_ego - v_limit)`
+          - `d_cost = (D + t_gap * v_ego - d_rel) / 10,000`
+          - `v_cost = (v_ego - v_limit) / 100`
 
     Reward:
-        `-|v_ego - v_set| - 0.1 * |a_ego|/a_scale - 0.1 * |a_ego - in_ego|/a_scale`
+        `-|v_ego - v_set|/100 - 0.01 * |a_ego|/a_scale - 0.01 * |a_ego - in_ego|/a_scale`
         where `a_scale = max(a_max, -a_min)`
 
         The second term incentives efficiency (accelerate less).
@@ -284,7 +284,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         in_ego = in_ego / a_scale
         r_a = -np.abs(a_ego) - np.abs(a_ego - in_ego)
 
-        return r_v + 0.1 * r_a
+        return r_v / 100 + 0.01 * r_a
 
     @override
     def _costs(
@@ -294,8 +294,8 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         d_rel = self._d_rel(state)
         safe_d = self._safe_distance(state)
 
-        d_cost = safe_d - d_rel
-        v_cost = v_ego - self.speed_limit
+        d_cost = (safe_d - d_rel) / 1e4
+        v_cost = (v_ego - self.speed_limit) / 100
         return d_cost, v_cost
 
     @override
