@@ -42,14 +42,17 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
      - `a_lead_range`: Range of the throttle input of the lead car as a (min, max) tuple.
      - `a_ego_range`: Range of the throttle input of the ego car as a (min, max) tuple.
      - `mu`: A friction parameter.
-     - `in_lead_switches`: How often the throttle input of the lead car switches
-        in one simulation.
+     - `in_lead_switches`:
+     - `switch_period`: Determines how frequently the throttle input of the
+       lead car switches.
+       The switch period is the duration (number of time steps)
+       for which the throttle input of the lead car stays constant.
      - `safe_distance_absolute` (`D`): a fixed distance that the ego car needs to
         maintain to the lead car.
-     - `safe_distance_relative` (`t_gap`): the distance relative to the ego car
+     - `safe_distance_time` (`t_gap`): the distance relative to the ego car
         velocity that the ego car needs to maintain to the lead car.
         The overall distance that the ego car needs to maintain is
-        `safe_distance_absolute + safe_distance_relative * v_ego`.
+        `D + t_gap * v_ego`.
      - `set_velocity` (`v_set`): The set velocity of the ego car.
      - `speed_limit` (`v_limit`): The maximum velocity the car may
         The ego car may not this velocity.
@@ -91,12 +94,15 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
     Safety constraint:
         `Always (d_rel >= D + t_gap * v_ego AND v_ego <= v_limit)`
         Costs:
-          - `d_cost = (D + t_gap * v_ego - d_rel) / 10,000`
+          - `d_cost = (D + t_gap * v_ego - d_rel) / 10000`
           - `v_cost = (v_ego - v_limit) / 100`
 
     Reward:
-        `-|v_ego - v_set|/100 - 0.01 * |a_ego|/a_scale - 0.01 * |a_ego - in_ego|/a_scale`
-        where `a_scale = max(a_max, -a_min)`
+        ```
+        -where(d_rel >= 2 * d_save, |v_ego - v_set|, |v_ego - min(v_lead, v_set)|) / 100
+        -0.001 * |a_ego|/a_scale - 0.01 * |a_ego - in_ego|/a_scale
+        ```
+        where `d_safe = (D + t_gap * v_ego)` and `a_scale = max(a_max, -a_min)`.
 
         The second term incentives efficiency (accelerate less).
         The last term relates the current acceleration to the current acceleration
@@ -122,17 +128,17 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         time_steps: int = 1000,
         step_size: float = 0.1,
         safe_distance_absolute: float = 10.0,
-        safe_distance_relative: float = 1.4,
+        safe_distance_time: float = 1.4,
         set_velocity: float = 30.0,
         speed_limit: float = 33.0,
         x0_lead: float | tuple[float, float] = (60.0, 100.0),
         v0_lead: float | tuple[float, float] = (10.0, 40.0),
         x0_ego: float | tuple[float, float] = (0.0, 0.0),
         v0_ego: float | tuple[float, float] = (10.0, 30.0),
-        a_lead_range: tuple[float, float] = (-5.0, 3.0),
+        a_lead_range: tuple[float, float] = (-3.0, 3.0),
         a_ego_range: tuple[float, float] = (-3.0, 2.0),
         mu: float = 0.0001,
-        switch_frequency: int = 250,
+        switch_period: int = 250,
         batch_size: int = 1,
         engine: Literal["RK4", "Euler"] = "RK4",
         render_mode=None,
@@ -162,7 +168,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             high=[np.inf] * 3,
         )
         act_space = box(low=a_ego_min, high=a_ego_max)
-        in_lead_switches = time_steps // switch_frequency
+        in_lead_switches = time_steps // switch_period
         init_options_space = box(
             low=[x0_lead[0], v0_lead[0], x0_ego[0], v0_ego[0]]
             + [a_lead_min] * in_lead_switches,
@@ -184,7 +190,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
             render_mode=render_mode,
         )
         self.safe_distance_absolute: Final[float] = safe_distance_absolute
-        self.safe_distance_relative: Final[float] = safe_distance_relative
+        self.safe_distance_time: Final[float] = safe_distance_time
         self.set_velocity: Final[float] = set_velocity
         self.speed_limit: Final[float] = speed_limit
         self.x0_lead: Final[tuple[float, float]] = x0_lead
@@ -193,7 +199,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         self.v0_ego: Final[tuple[float, float]] = v0_ego
         self.a_lead_range: Final[tuple[float, float]] = a_lead_range
         self.a_ego_range: Final[tuple[float, float]] = a_ego_range
-        self.switch_frequency: Final[int] = switch_frequency
+        self.switch_period: Final[int] = switch_period
         self.in_lead_switches: Final[int] = in_lead_switches
         self.in_lead_min: Final[float] = a_lead_min
         self.in_lead_max: Final[float] = a_lead_max
@@ -228,9 +234,9 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
 
         # stretch in_lead to the number of time steps
         self.__in_lead = np.empty((self.batch_size, self.time_steps))
-        size_repeated = self.switch_frequency * self.in_lead_switches
+        size_repeated = self.switch_period * self.in_lead_switches
         self.__in_lead[:, :size_repeated] = np.repeat(
-            in_lead, self.switch_frequency, axis=-1
+            in_lead, self.switch_period, axis=-1
         )
         if size_repeated < self.time_steps:
             self.__in_lead[:, size_repeated:] = in_lead[:, (-1,)]
@@ -267,15 +273,19 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
 
     def _safe_distance(self, state: _S) -> NDArray[np.float32]:
         (v_ego,) = self.get_state(state, "v_ego")
-        return self.safe_distance_absolute + self.safe_distance_relative * v_ego
+        return self.safe_distance_absolute + self.safe_distance_time * v_ego
 
     @override
     def _reward(self, state: _S, action: _A, t: float) -> NDArray[np.float32]:
         # return -np.maximum(self._d_rel(state) - self._safe_distance(state), 0.0)
-        v_ego, a_ego = self.get_state(state, "v_ego", "a_ego")
+        d_rel = self._d_rel(state)
+        d_safe = self._safe_distance(state)
+        v_lead, v_ego, a_ego = self.get_state(state, "v_lead", "v_ego", "a_ego")
         in_ego = action.reshape((-1, *self.action_space.shape))
 
-        r_v = -np.abs(v_ego - self.set_velocity)
+        r_v_far = -np.abs(v_ego - self.set_velocity)
+        r_v_near = -np.abs(v_ego - np.minimum(v_lead, self.set_velocity))
+        r_v = np.where(d_rel >= 2 * d_safe, r_v_far, r_v_near)
 
         # normalize accelerations
         a_min, a_max = self.a_ego_range
@@ -284,7 +294,7 @@ class ACCEnv(ODEEnv[_S, _O, _A, _IO]):
         in_ego = in_ego / a_scale
         r_a = -np.abs(a_ego) - np.abs(a_ego - in_ego)
 
-        return r_v / 100 + 0.01 * r_a
+        return r_v / 100 + 0.001 * r_a
 
     @override
     def _costs(

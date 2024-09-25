@@ -12,7 +12,7 @@ from odeenvs import ACCEnv
     "render_mode", [None, pytest.param("human", marks=pytest.mark.render)]
 )
 def test_simulate(render_mode):
-    env = ACCEnv(time_steps=128, switch_frequency=50, render_mode=render_mode)
+    env = ACCEnv(time_steps=128, switch_period=50, render_mode=render_mode)
     observation, _ = env.reset(seed=7739521)
 
     for i in range(256):
@@ -32,7 +32,7 @@ def test_simulate(render_mode):
 
 @pytest.mark.render
 def test_render():
-    env = ACCEnv(time_steps=100, switch_frequency=50, render_mode="human")
+    env = ACCEnv(time_steps=100, switch_period=50, render_mode="human")
     env.reset()
     env.render()
     sleep(10)
